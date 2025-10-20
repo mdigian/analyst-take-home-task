@@ -100,6 +100,7 @@ WITH patient_med_list AS ( --312028 encounters with active med rx.   Convert CTE
            -----------------------------------------------------------------------------------------------------
          ROW_NUMBER() OVER (PARTITION BY pat.id ORDER BY enc.START)                 AS SEQ                     , --required for FIRST READMISSION
        LAG(enc.START) OVER (PARTITION BY pat.id ORDER BY enc.START)                 AS PRIOR_ADMISSION_DATE    ,
+      LEAD(enc.START) OVER (PARTITION BY pat.id ORDER BY enc.START)                 AS next_encounter_date     ,
          -------------------------------------------------------------------------------------------------------
            CASE WHEN pat.DEATHDATE = STRFTIME(enc.STOP ::DATE,'%Y-%m-%d') THEN 1    
                 WHEN pat.DEATHDATE <> 'NA'                                THEN 0    
@@ -128,28 +129,45 @@ WITH patient_med_list AS ( --312028 encounters with active med rx.   Convert CTE
 -- 432 rows    
 CREATE OR REPLACE VIEW SOLUTION
 AS
+
 SELECT 
        oc.PATIENT_ID, 
        oc.ENCOUNTER_ID,
+       oc.SEQ,
        oc.HOSPITAL_ENCOUNTER_DATE,
+       oc.PRIOR_ADMISSION_DATE,
        oc.AGE_AT_VISIT, 
      --oc.DEATH_DATE, 
        oc.DEATH_AT_VISIT_IND, 
        oc.COUNT_CURRENT_MEDS, 
        oc.CURRENT_OPIOID_IND,
-     --          DATEDIFF('day', oc.PRIOR_ADMISSION_DATE, oc.HOSPITAL_ENCOUNTER_DATE)                                                            AS DAYS_FROM_PRIOR,
-       CASE WHEN DATEDIFF('day', oc.PRIOR_ADMISSION_DATE, oc.HOSPITAL_ENCOUNTER_DATE) <= 90 THEN 1 ELSE 0 END                                    AS READMISSION_90_DAY_IND,
-       CASE WHEN DATEDIFF('day', oc.PRIOR_ADMISSION_DATE, oc.HOSPITAL_ENCOUNTER_DATE) <= 30 THEN 1 ELSE 0 END                                    AS READMISSION_30_DAY_IND,
-       CASE WHEN DATEDIFF('day', oc.PRIOR_ADMISSION_DATE, oc.HOSPITAL_ENCOUNTER_DATE) <= 90 THEN oc.PRIOR_ADMISSION_DATE::VARCHAR ELSE 'N/A' END AS FIRST_READMISSION_DATE
+                 DATEDIFF('day', oc.PRIOR_ADMISSION_DATE   , oc.HOSPITAL_ENCOUNTER_DATE)                                                            AS DAYS_FROM_PRIOR,
+       CASE WHEN DATEDIFF('day', oc.PRIOR_ADMISSION_DATE   , oc.HOSPITAL_ENCOUNTER_DATE) <= 90 THEN 1 ELSE 0 END                                    AS READMISSION_90_DAY_IND,
+       CASE WHEN DATEDIFF('day', oc.PRIOR_ADMISSION_DATE   , oc.HOSPITAL_ENCOUNTER_DATE) <= 30 THEN 1 ELSE 0 END                                    AS READMISSION_30_DAY_IND,
+       CASE WHEN DATEDIFF('day', oc.HOSPITAL_ENCOUNTER_DATE, oc.next_encounter_date    ) <= 90  
+                                                                             /* AND seq = 1 */ THEN oc.next_encounter_date END                      AS FIRST_READMISSION_DATE
      FROM overdose_cohort oc;
      
      
-COPY (SELECT * FROM SOLUTION) TO 'C:\github\chop-test\solution\MICHAEL_DIGIANTOMASSO.csv' (HEADER, DELIMITER ',');
- 
+COPY (SELECT * FROM SOLUTION) TO 'C:\github\chop-test\solution\MICHAEL_DIGIANTOMASSO.csv' (HEADER, DELIMITER ','); --export to local drive
  
 
---QA CHECK
- 
+
+--QA CHECKS
+/*
+    SELECT patient_id, 
+           SEQ, 
+           DAYS_FROM_PRIOR                                 AS elapsed,
+        -- STRFTIME('%Y-%m-%d',PRIOR_ADMISSION_DATE)       AS prior,
+           STRFTIME('%Y-%m-%d',HOSPITAL_ENCOUNTER_DATE)    AS visit,
+           STRFTIME('%Y-%m-%d',FIRST_READMISSION_DATE)     AS first_readmit, 
+           READMISSION_30_DAY_IND                          AS r30,
+           READMISSION_90_DAY_IND                          AS r90,
+      FROM SOLUTION
+     WHERE PATIENT_ID IN (SELECT PATIENT_ID FROM SOLUTION WHERE READMISSION_30_DAY_IND > 0 OR READMISSION_90_DAY_IND > 0)
+
+     ORDER BY patient_id, HOSPITAL_ENCOUNTER_DATE;
+*/
     SELECT COUNT(DISTINCT PATIENT_ID)   AS patients,  
            COUNT(*)                     AS drug_od_hosptial_ER_encounters,
            SUM(DEATH_AT_VISIT_IND)      AS deaths,                          -- SELECT * FROM overdose_cohort WHERE DEATH_AT_VISIT_IND = 1
